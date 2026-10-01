@@ -2,7 +2,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionsSearchResult } from "../../../packages/gateway-protocol/src/index.js";
 import type { SessionsListResult } from "../api/types.ts";
-import type { RouteId } from "../app-route-paths.ts";
 import type { ApplicationContext } from "../app/context.ts";
 import { installDialogPolyfill } from "../test-helpers/modal-dialog.ts";
 import {
@@ -28,6 +27,45 @@ describe("CommandPalette session search", () => {
     vi.restoreAllMocks();
   });
 
+  it("classifies punctuation-normalized title hits as sessions and keeps them selectable", async () => {
+    const metadata = createSessionResult(
+      "agent:main:communication",
+      "Per-session communication controls in UI",
+    );
+    const list = vi.fn<ApplicationContext["sessions"]["list"]>(async () => metadata);
+    const { gateway } = createGateway(true, {
+      methods: ["sessions.search"],
+      request: (method) =>
+        method === "sessions.search"
+          ? {
+              sessions: metadata.sessions,
+              results: [
+                {
+                  sessionKey: "agent:main:communication",
+                  sessionId: "communication",
+                  messageId: "message-communication",
+                  role: "assistant",
+                  timestamp: 42,
+                  snippet: "Per-session communication controls are available.",
+                  score: 1,
+                },
+              ],
+            }
+          : { models: [] },
+    });
+    const { palette } = await mountPalette(createContext(gateway, list));
+
+    await enterQuery(palette, "per session communi");
+    await vi.advanceTimersByTimeAsync(200);
+    await palette.updateComplete;
+
+    const buttons = [...palette.querySelectorAll("button")];
+    expect(buttons.some((button) => button.textContent?.match(/Sessions\s*1/u))).toBe(true);
+    expect(buttons.some((button) => button.textContent?.match(/Messages\s*0/u))).toBe(true);
+    findPaletteOption(palette, "Per-session communication controls in UI")?.click();
+    expect(palette.onSelectSession).toHaveBeenCalledWith("agent:main:communication");
+  });
+
   it.each([false, true])(
     "keeps transcript snippets with a server metadata match: %s",
     async (serverMatch) => {
@@ -39,7 +77,7 @@ describe("CommandPalette session search", () => {
         totalCount: 2,
         sessions: [...metadata.sessions, ...contextOnly.sessions],
       } as SessionsListResult;
-      const list = vi.fn<ApplicationContext<RouteId>["sessions"]["list"]>(async (options) =>
+      const list = vi.fn<ApplicationContext["sessions"]["list"]>(async (options) =>
         options?.search && !serverMatch ? metadata : roster,
       );
       const searchResult: SessionsSearchResult = {
@@ -66,7 +104,7 @@ describe("CommandPalette session search", () => {
       const { palette } = await mountPalette(createContext(gateway, list));
 
       await enterQuery(palette, "needle");
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(200);
       await vi.waitFor(() =>
         expect(request.mock.calls.filter(([method]) => method === "sessions.search")).toHaveLength(
           1,
@@ -103,7 +141,7 @@ describe("CommandPalette session search", () => {
       displayName: "Recent discussion " + index,
       updatedAt: 300 - index,
     }));
-    const list = vi.fn<ApplicationContext<RouteId>["sessions"]["list"]>(async (options) => {
+    const list = vi.fn<ApplicationContext["sessions"]["list"]>(async (options) => {
       const rows = options?.search ? [] : [...recent, ...older.sessions];
       const offset = options?.offset ?? 0;
       const limit = options?.limit ?? 100;
@@ -142,7 +180,7 @@ describe("CommandPalette session search", () => {
     const { gateway } = createGateway(true, { methods: ["sessions.search"], request });
     const { palette } = await mountPalette(createContext(gateway, list));
     await enterQuery(palette, "uncommonneedle");
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(200);
     await palette.updateComplete;
 
     expect(palette.textContent).toContain("Older planning discussion");
@@ -153,7 +191,7 @@ describe("CommandPalette session search", () => {
 
   it("keeps metadata matches selectable when transcript search fails", async () => {
     const metadata = createSessionResult("agent:main:metadata", "Needle planning");
-    const list = vi.fn<ApplicationContext<RouteId>["sessions"]["list"]>(async () => metadata);
+    const list = vi.fn<ApplicationContext["sessions"]["list"]>(async () => metadata);
     const request = vi.fn(async (method: string) => {
       if (method === "models.list") {
         return { models: [] };
@@ -167,7 +205,7 @@ describe("CommandPalette session search", () => {
     const { palette } = await mountPalette(createContext(gateway, list));
 
     await enterQuery(palette, "needle");
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(200);
     await vi.waitFor(() =>
       expect(request.mock.calls.filter(([method]) => method === "sessions.search")).toHaveLength(1),
     );
@@ -211,7 +249,7 @@ describe("CommandPalette session search", () => {
         totalCount: 2,
         sessions: [...metadata.sessions, ...contextOnly.sessions],
       } as SessionsListResult;
-      const list = vi.fn<ApplicationContext<RouteId>["sessions"]["list"]>(async (options) =>
+      const list = vi.fn<ApplicationContext["sessions"]["list"]>(async (options) =>
         options?.search ? metadata : roster,
       );
       const request = vi.fn(async (method: string) =>
@@ -240,7 +278,7 @@ describe("CommandPalette session search", () => {
       const { palette } = await mountPalette(createContext(gateway, list));
 
       await enterQuery(palette, "needle");
-      await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(200);
       await vi.waitFor(() =>
         expect(request.mock.calls.filter(([method]) => method === "sessions.search")).toHaveLength(
           1,
