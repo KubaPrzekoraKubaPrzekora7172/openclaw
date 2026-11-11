@@ -3,6 +3,7 @@ import { createRouter, definePage } from "@openclaw/uirouter";
 import { Show, createSignal, flush } from "solid-js";
 import { onTestFinished, vi } from "vitest";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
+import type { SkillStatusReport } from "../../api/types.ts";
 import { createAgentSelectionCapability } from "../../app/agent-selection.ts";
 import { makeBootRoster } from "../../app/bootstrap.test-support.ts";
 import type { ApplicationContext } from "../../app/context.ts";
@@ -32,12 +33,38 @@ export const remoteSkill = {
   displayName: "Calendar",
 };
 
+type SkillsRouteFixture = Partial<SkillsRouteData> & { report?: SkillStatusReport | null };
+
 export function mountSkills(
-  request: (method: string, params?: unknown) => Promise<unknown>,
+  request: (
+    method: string,
+    params?: unknown,
+    options?: Parameters<GatewayBrowserClient["request"]>[2],
+  ) => Promise<unknown>,
   surface: "discovery" | "settings" = "discovery",
-  options: { pendingRoute?: boolean } = {},
+  initialData: SkillsRouteFixture & { pendingRoute?: boolean } = {},
 ) {
-  const client = { request } as unknown as GatewayBrowserClient;
+  const {
+    pendingRoute = false,
+    report = { workspaceDir: "/workspace", managedSkillsDir: "/managed", skills: [] },
+    ...initialRoute
+  } = initialData;
+  let nextReport = report;
+  // Fixture inventories enter through the same request owner as live route adoption.
+  const client = {
+    request: (
+      method: string,
+      params?: unknown,
+      options?: Parameters<GatewayBrowserClient["request"]>[2],
+    ) => {
+      if (method === "skills.status" && nextReport) {
+        const value = nextReport;
+        nextReport = null;
+        return Promise.resolve(value);
+      }
+      return options ? request(method, params, options) : request(method, params);
+    },
+  } as unknown as GatewayBrowserClient;
   const connection = createApplicationGateway(
     createApplicationGatewaySnapshot({
       client,
@@ -63,8 +90,14 @@ export function mountSkills(
     ],
   });
   onTestFinished(() => router.stop());
-  const runtimeConfig: SkillsState["runtimeConfig"] = {
-    runExternalMutation: async (task) => ({
+  // Also read by the skill dialog: a loaded config with no stored skill keys.
+  const runtimeConfig = {
+    state: { configSnapshot: { config: {} }, lastError: null },
+    subscribe: () => () => undefined,
+    ensureDisplayLoaded: async () => undefined,
+    runExternalMutation: async (
+      task: Parameters<SkillsState["runtimeConfig"]["runExternalMutation"]>[0],
+    ) => ({
       ok: true,
       value: await task(client),
       refresh: { ok: true },
@@ -94,11 +127,11 @@ export function mountSkills(
     agents,
     selectedAgentId: "main",
     selectionIntentRevision: selection.intentRevision,
-    report: { workspaceDir: "/workspace", managedSkillsDir: "/managed", skills: [] },
     error: null,
+    ...initialRoute,
   };
   const [routeData, setRouteData] = createSignal<SkillsRouteData | undefined>(
-    options.pendingRoute ? undefined : initialRouteData,
+    pendingRoute ? undefined : initialRouteData,
     { ownedWrite: true },
   );
   const [currentSurface, setCurrentSurface] = createSignal(surface);
@@ -110,6 +143,7 @@ export function mountSkills(
     </ApplicationProvider>
   ));
   flush();
+  nextReport = null;
   return {
     get page() {
       return mounted.container.querySelector<HTMLElement>("openclaw-skills-page")!;
@@ -124,13 +158,18 @@ export function mountSkills(
       setCurrentSurface(next);
       flush();
     },
-    publishRouteData(this: void, patch: Partial<SkillsRouteData>) {
-      setRouteData({ ...initialRouteData, ...patch });
+    publishRouteData(this: void, patch: SkillsRouteFixture) {
+      const { report: fixtureReport = report, ...route } = patch;
+      nextReport = fixtureReport;
+      setRouteData({ ...initialRouteData, ...route });
       flush();
+      nextReport = null;
     },
     refreshRouteData: () => {
+      nextReport = report;
       setRouteData({ ...initialRouteData });
       flush();
+      nextReport = null;
     },
   };
 }
